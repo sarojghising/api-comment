@@ -53,7 +53,10 @@ class CommentController extends Controller
         DB::beginTransaction();
         try {
             $user = Auth::user();
-            $comment = $user->comments()->findOrFail($id);
+            $comment = $user->comments()->find($id);
+            if (!$comment) {
+                return $this->errorResponse('Comment not found', 404);
+            }
             $comment->update($request->validated());
             DB::commit();
             return $this->successResponse(new CommentResource($comment), 'Comment updated successfully');

@@ -5,9 +5,9 @@ namespace App\Http\Controllers;
 use App\Exceptions\CommentException;
 use App\Http\Requests\StoreCommentRequest;
 use App\Http\Requests\UpdateCommentRequest;
-use App\Http\Resources\CommentCollection;
 use App\Http\Resources\CommentResource;
 use App\Http\Traits\ApiResponse;
+use App\Models\Comment;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -16,74 +16,134 @@ class CommentController extends Controller
 {
     use ApiResponse;
 
+    /**
+     * Display a listing of the authenticated user's comments.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function index()
     {
-        $user = Auth::user();
-        $comments = $user->comments;
+        $comments = Auth::user()->comments;
 
-        return $this->successResponse(new CommentCollection($comments), 'Comments retrieved successfully');
+        return $this->successResponse(
+            CommentResource::collection($comments),
+            'Comments retrieved successfully'
+        );
     }
 
-    // Create a new comment
+    /**
+     * Store a newly created comment in storage.
+     *
+     * @param  \App\Http\Requests\StoreCommentRequest  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function store(StoreCommentRequest $request)
     {
-        DB::beginTransaction();
-        try {
-            $user = Auth::user();
-            $comment = $user->comments()->create($request->validated());
-            DB::commit();
-            return $this->successResponse(new CommentResource($comment), 'Comment created successfully', 201);
-        } catch (\Throwable $th) {
-            DB::rollBack();
-            Log::info("=================== Store Comment =================");
-            Log::error('Exception occurred:', [
-                'message' => $th->getMessage(),
-                'file' => $th->getFile(),
-                'line' => $th->getLine(),
-                'trace' => $th->getTraceAsString(),
-            ]);
-            Log::info("=================== End Store Comment =================");
-            throw new CommentException('An error occurred while creating the comment', 500);
-        }
+        return $this->executeCommentOperation(function () use ($request) {
+            $comment = Auth::user()->comments()->create($request->validated());
+            return new CommentResource($comment);
+        }, 'Comment created successfully', 201);
     }
 
-
+    /**
+     * Update the specified comment in storage.
+     *
+     * @param  \App\Http\Requests\UpdateCommentRequest  $request
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function update(UpdateCommentRequest $request, $id)
     {
-        DB::beginTransaction();
-        try {
-            $user = Auth::user();
-            $comment = $user->comments()->find($id);
+        return $this->executeCommentOperation(function () use ($request, $id) {
+            $comment = $this->findUserComment($id);
+
             if (!$comment) {
                 return $this->errorResponse('Comment not found', 404);
             }
+
             $comment->update($request->validated());
-            DB::commit();
-            return $this->successResponse(new CommentResource($comment), 'Comment updated successfully');
-        } catch (\Throwable $th) {
-            DB::rollBack();
-            Log::info("=================== Update Comment =================");
-            Log::error('Exception occurred:', [
-                'message' => $th->getMessage(),
-                'file' => $th->getFile(),
-                'line' => $th->getLine(),
-                'trace' => $th->getTraceAsString(),
-            ]);
-            Log::info("=================== End Update Comment =================");
-            throw new CommentException('An error occurred while updating the comment', 500);
-        }
+            return new CommentResource($comment);
+        }, 'Comment updated successfully');
     }
 
-    // Delete a comment (Bonus)
+    /**
+     * Remove the specified comment from storage.
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function destroy($id)
     {
-        $user = Auth::user();
-        $comment = $user->comments()->find($id);
+        $comment = $this->findUserComment($id);
+
         if (!$comment) {
             return $this->errorResponse('Comment not found', 404);
         }
+
         $comment->delete();
 
         return $this->successResponse(null, 'Comment deleted successfully', 204);
+    }
+
+    /**
+     * Find a comment that belongs to the authenticated user.
+     *
+     * @param  int  $id
+     * @return \App\Models\Comment|null
+     */
+    private function findUserComment($id)
+    {
+        return Auth::user()->comments()->find($id);
+    }
+
+    /**
+     * Execute a database operation with transaction support and error handling.
+     *
+     * @param  callable  $operation
+     * @param  string  $successMessage
+     * @param  int  $successStatusCode
+     * @return \Illuminate\Http\JsonResponse
+     * @throws \App\Exceptions\CommentException
+     */
+    private function executeCommentOperation(callable $operation, string $successMessage, int $successStatusCode = 200)
+    {
+        DB::beginTransaction();
+
+        try {
+            $result = $operation();
+
+            // If the operation returned a response, return it directly
+            if ($result instanceof \Illuminate\Http\JsonResponse) {
+                DB::rollBack();
+                return $result;
+            }
+
+            DB::commit();
+            return $this->successResponse($result, $successMessage, $successStatusCode);
+
+        } catch (\Throwable $th) {
+            DB::rollBack();
+            $this->logException($th, 'Comment Operation');
+            throw new CommentException('An error occurred while processing the comment', 500);
+        }
+    }
+
+    /**
+     * Log exception details.
+     *
+     * @param  \Throwable  $exception
+     * @param  string  $operation
+     * @return void
+     */
+    private function logException(\Throwable $exception, string $operation)
+    {
+        Log::info("=================== {$operation} =================");
+        Log::error('Exception occurred:', [
+            'message' => $exception->getMessage(),
+            'file' => $exception->getFile(),
+            'line' => $exception->getLine(),
+            'trace' => $exception->getTraceAsString(),
+        ]);
+        Log::info("=================== End {$operation} =================");
     }
 }
